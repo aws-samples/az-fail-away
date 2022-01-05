@@ -1,17 +1,13 @@
-## My Project
+# az-fail-away
 
-TODO: Fill this README out!
+This project provides a serverless infrastructure for updating the availability zones of autoscaling groups en masse.
 
-Be sure to:
+## Architecture
 
-* Change the title in this README
-* Edit your repository description on GitHub
+![](./images/architecture.drawio.png)
 
-## Security
+## Useful commands
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
-
-## License
-
-This library is licensed under the MIT-0 License. See the LICENSE file.
-
+ * `npm run build`   compile typescript to js
+ * `cdk deploy -c account=<your_account> -c region=<your_region> AzFailAwayStack`
+ * `cdk deploy -c account=<your_account> -c region=<your_region> -c vpcId <your_vpc_id> TestAsgStack`
