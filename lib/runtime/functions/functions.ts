@@ -155,13 +155,14 @@ export function updateAsg(azs: string[], event: AutoScalingGroupDetails, autoSca
 
 }
 
-export function getAutoScalingGroupDetails(event: AutoScalingGroupDetails, autoScalingClient = new AutoScalingClient({region:event.operationEvent.region})): Promise<AutoScalingGroupDetails | null> {
+export function getAutoScalingGroupDetails(event: AutoScalingGroupDetails, autoScalingClient = new AutoScalingClient({region: event.operationEvent.region})): Promise<AutoScalingGroupDetails | null> {
     const describeAutoScalingGroup = new DescribeAutoScalingGroupsCommand({
         AutoScalingGroupNames: [event.autoScalingGroupName!],
     })
     return autoScalingClient.send(describeAutoScalingGroup).then(value => {
         if (value.AutoScalingGroups != null && value.AutoScalingGroups.length > 0) {
             const details = value.AutoScalingGroups.map(value1 => {
+                console.log(`getAutoScalingGroupDetails: ${JSON.stringify(value)}`)
                 return {
                     autoScalingGroupName: value1.AutoScalingGroupName,
                     autoScalingGroupARN: value1.AutoScalingGroupARN,
@@ -177,6 +178,9 @@ export function getAutoScalingGroupDetails(event: AutoScalingGroupDetails, autoS
             return null
         }
 
+    }).catch(reason => {
+        console.warn(`Problem looking up getAutoScalingGroupDetails: ${reason}`)
+        return null
     })
 
 }
@@ -218,8 +222,7 @@ export function findAllASGsThatUseThisAz(event: OperationEvent, autoScalingClien
 
 }
 
-
-export function lookupASGsThatPreviouslyUsedThisAz(event: OperationEvent, dynamoDbClient: DynamoDBClient = new DynamoDBClient({region: event.region}), autoScalingClient = new AutoScalingClient({region: event.region}),ec2Client: EC2Client = new EC2Client({region: event.region})): Promise<Promise<AutoScalingGroupDetails>[]> {
+export function lookupASGsThatPreviouslyUsedThisAz(event: OperationEvent, dynamoDbClient: DynamoDBClient = new DynamoDBClient({region: event.region}), autoScalingClient = new AutoScalingClient({region: event.region}), ec2Client: EC2Client = new EC2Client({region: event.region})): Promise<Promise<AutoScalingGroupDetails | null>[]> {
     if (event.operation == Operation.Restore) {
         const id = `${event.accountId}::${event.zoneId}`
         const getItem: GetItemCommand = new GetItemCommand({
@@ -257,44 +260,43 @@ export function lookupASGsThatPreviouslyUsedThisAz(event: OperationEvent, dynamo
 
             return value.map(savedAutoScalingGroupDetails => {
                 return getAutoScalingGroupDetails(savedAutoScalingGroupDetails, autoScalingClient).then(upToDateAutoScalingGroupDetails => {
-                   if(upToDateAutoScalingGroupDetails!=null) {
-                       return ec2Client.send(new DescribeSubnetsCommand({
-                           Filters: [{
-                               Name: "availability-zone",
-                               Values: [savedAutoScalingGroupDetails.zoneName]
-                           }]
+                    if (upToDateAutoScalingGroupDetails != null) {
+                        return ec2Client.send(new DescribeSubnetsCommand({
+                            Filters: [{
+                                Name: "availability-zone",
+                                Values: [savedAutoScalingGroupDetails.zoneName]
+                            }]
 
-                       })).then(subnets => {
-                           if (subnets.Subnets != null) {
-                               const subnetsToRestore = subnets.Subnets.filter((subnet) => {
-                                   if (savedAutoScalingGroupDetails.subnetIds != null && subnet.SubnetId != null) {
-                                       return savedAutoScalingGroupDetails.subnetIds.indexOf(subnet.SubnetId) > -1
-                                   }
-                                   return false
-                               }).map((subnet) => {
-                                   return subnet.SubnetId!
-                               })
-                               // console.log(`subnetsToRestore: ${subnetsToRestore}`)
-                               if (upToDateAutoScalingGroupDetails.subnetIds != null) {
-                                   upToDateAutoScalingGroupDetails.subnetIds = upToDateAutoScalingGroupDetails.subnetIds.concat(subnetsToRestore)
-                               } else {
-                                   upToDateAutoScalingGroupDetails.subnetIds = subnetsToRestore
-                               }
+                        })).then(subnets => {
+                            if (subnets.Subnets != null) {
+                                const subnetsToRestore = subnets.Subnets.filter((subnet) => {
+                                    if (savedAutoScalingGroupDetails.subnetIds != null && subnet.SubnetId != null) {
+                                        return savedAutoScalingGroupDetails.subnetIds.indexOf(subnet.SubnetId) > -1
+                                    }
+                                    return false
+                                }).map((subnet) => {
+                                    return subnet.SubnetId!
+                                })
+                                // console.log(`subnetsToRestore: ${subnetsToRestore}`)
+                                if (upToDateAutoScalingGroupDetails.subnetIds != null) {
+                                    upToDateAutoScalingGroupDetails.subnetIds = upToDateAutoScalingGroupDetails.subnetIds.concat(subnetsToRestore)
+                                } else {
+                                    upToDateAutoScalingGroupDetails.subnetIds = subnetsToRestore
+                                }
 
-                           } else {
-                               console.warn(`No subnets found for availability zone ${savedAutoScalingGroupDetails.zoneName}`)
-                           }
+                            } else {
+                                console.warn(`No subnets found for availability zone ${savedAutoScalingGroupDetails.zoneName}`)
+                            }
 
-                           return upToDateAutoScalingGroupDetails
-                       })
-                   }else{
-                       throw new Error(`Could not retrieve current information for ASG ${savedAutoScalingGroupDetails.autoScalingGroupName}`)
-                   }
+                            return upToDateAutoScalingGroupDetails
+                        })
+                    } else {
+                        console.warn(`Could not retrieve current information for ASG ${savedAutoScalingGroupDetails.autoScalingGroupName}`)
+                        return null
+                    }
 
                 })
-            }).filter(value1 => {
-                return value1 != null
-            }) as Promise<AutoScalingGroupDetails>[]
+            }) as Promise<AutoScalingGroupDetails | null>[]
 
         })
 

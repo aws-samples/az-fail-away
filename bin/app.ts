@@ -33,7 +33,11 @@ NagSuppressions.addStackSuppressions(failAwayStack,[{
     id: "AwsSolutions-IAM4",
     reason: "Ok to use AWS managed policies",
 
-}],true)
+},
+    {
+        id: "AwsSolutions-APIG4",
+        reason: "Customer should implement authorization as they see fit"
+    }],true)
 new TestAsgStack(app,"TestAsgStack",{
     env:env,
     count: 3,

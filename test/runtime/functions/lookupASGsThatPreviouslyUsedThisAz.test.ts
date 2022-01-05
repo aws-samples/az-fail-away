@@ -99,12 +99,14 @@ test("Can lookup ASGs That Previously Used This Az", () => {
         }
         for (const p of promises) {
             p.then(value => {
-                expect(value.autoScalingGroupName).toBe("test-asg-01")
-                expect(value.subnetIds).toEqual(expect.arrayContaining(["subnet-0778ab3187fdbfe37", "subnet-09e77b41e33b9b69d", "subnet-0c775f4df04b75521"]))
+                if(value!=null) {
+                    expect(value.autoScalingGroupName).toBe("test-asg-01")
+                    expect(value.subnetIds).toEqual(expect.arrayContaining(["subnet-0778ab3187fdbfe37", "subnet-09e77b41e33b9b69d", "subnet-0c775f4df04b75521"]))
+                }else{
+                    throw new Error("Results should not contain null")
+                }
             })
         }
-    }).catch(reason => {
-        fail(reason)
     })
 })
 

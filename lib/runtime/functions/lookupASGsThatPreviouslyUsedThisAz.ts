@@ -27,9 +27,13 @@ export const lambdaHandler = xrayScope((segment) => async (
 ): Promise<AutoScalingGroupDetails[]> => {
     console.log(`Event: ${JSON.stringify(event)}`)
     const results: AutoScalingGroupDetails[] = []
-    const asgs = await lookupASGsThatPreviouslyUsedThisAz(event)
+    const asgs:Promise<AutoScalingGroupDetails|null>[] = await lookupASGsThatPreviouslyUsedThisAz(event)
     for (const asg of asgs) {
-        results.push(await asg)
+        const result = await asg
+        if (result!=null) {
+            results.push(result)
+        }
+
     }
     return results
 }, "lookupASGsThatPreviouslyUsedThisAz")

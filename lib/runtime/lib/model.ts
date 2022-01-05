@@ -49,6 +49,8 @@ export interface AutoScalingGroupDetails {
 
 }
 
+
+
 export interface SaveAzInfo {
     status: Status,
     event: UpdateAutoScalingGroupEvent
