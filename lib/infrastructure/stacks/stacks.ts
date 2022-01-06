@@ -16,11 +16,11 @@
  *  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  */
-import {Duration, Lazy, NestedStack, Stack, StackProps} from 'aws-cdk-lib';
+import {Duration, NestedStack, RemovalPolicy, Stack, StackProps} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import {AZTable} from "../constructs/database";
 import {Api} from "../constructs/api";
-import {AZFailAwayStateMachine, AZFailAwayStateMachineProps, LambdaProps} from "../constructs/stateMachine";
+import {AZFailAwayStateMachine, AZFailAwayStateMachineProps} from "../constructs/stateMachine";
 import {Tracing} from "aws-cdk-lib/aws-lambda";
 import {AutoScalingGroup, CfnAutoScalingGroup, Signals, UpdatePolicy} from "aws-cdk-lib/aws-autoscaling";
 import {
@@ -30,14 +30,16 @@ import {
     AmazonLinuxStorage,
     CloudFormationInit,
     InitCommand,
-    InitFile, InitService, InitServiceRestartHandle,
+    InitFile,
+    InitService,
     InstanceClass,
     InstanceSize,
     InstanceType,
     Peer,
     Port,
     SecurityGroup,
-    SubnetType, UserData,
+    SubnetType,
+    UserData,
     Vpc
 } from "aws-cdk-lib/aws-ec2";
 import {
@@ -52,6 +54,7 @@ import {
 } from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import {dedent} from "ts-dedent"
 import {ManagedPolicy, Role, ServicePrincipal} from "aws-cdk-lib/aws-iam";
+import {BlockPublicAccess, Bucket} from "aws-cdk-lib/aws-s3";
 
 export interface StatelessStackProps extends AZFailAwayStateMachineProps {
 
@@ -169,6 +172,15 @@ export class TestAsgStack extends Stack {
                 ManagedPolicy.fromManagedPolicyArn(this,"CloudWatchAgentServerPolicy","arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy")
             ]
         })
+        const logBucket = new Bucket(
+            this,
+            "alb-logs-bucket",
+            {
+                blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+                removalPolicy:RemovalPolicy.DESTROY
+            }
+
+        )
         Array(props.count).fill(0).map((_, i) => {
 
             const privateSubnets = vpc.selectSubnets({
@@ -215,8 +227,11 @@ export class TestAsgStack extends Stack {
                 vpcSubnets: publicSubnets,
                 loadBalancerName: `alb-${i}`,
                 ipAddressType: IpAddressType.IPV4,
-                internetFacing: true
+                internetFacing: true,
+
             })
+
+            alb.logAccessLogs(logBucket,`alb-${i}`)
             alb.addSecurityGroup(webServerSecurityGroup)
             const atg = new ApplicationTargetGroup(this, `tg-${i}`, {
                 vpc: vpc,
@@ -258,22 +273,15 @@ export class TestAsgStack extends Stack {
     }
 }
 
-export interface AZFailAwayStackProps extends StackProps {
-    tracing: Tracing
-    findAllASGsThatUseThisAzProps: LambdaProps
-    lookupASGsThatPreviouslyUsedThisAz: LambdaProps
 
-}
 
 export class AZFailAwayStack extends Stack {
-    constructor(scope: Construct, id: string, props: AZFailAwayStackProps) {
+    constructor(scope: Construct, id: string, props: StackProps) {
         super(scope, id, props);
         const statefulStack = new StatefulStack(this, "stateful")
         const statelessStack = new StatelessStack(this, "stateless", {
             azTable: statefulStack.azTable,
-            tracing: props.tracing,
-            findAllASGsThatUseThisAzProps: props.findAllASGsThatUseThisAzProps,
-            lookupASGsThatPreviouslyUsedThisAz: props.lookupASGsThatPreviouslyUsedThisAz
+            tracing: Tracing.ACTIVE
         })
     }
 }

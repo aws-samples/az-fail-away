@@ -48,8 +48,7 @@ export interface LambdaProps {
 export interface AZFailAwayStateMachineProps {
     azTable: AZTable
     tracing: Tracing
-    findAllASGsThatUseThisAzProps: LambdaProps
-    lookupASGsThatPreviouslyUsedThisAz: LambdaProps
+
 }
 
 export class AZFailAwayStateMachine extends Construct {
@@ -58,13 +57,13 @@ export class AZFailAwayStateMachine extends Construct {
 
     constructor(scope: Construct, id: string, props: AZFailAwayStateMachineProps) {
         super(scope, id)
-        const findAllASGsThatUseThisAzFn = this.findAllASGsThatUseThisAz(props.tracing, props.findAllASGsThatUseThisAzProps.memorySize, props.findAllASGsThatUseThisAzProps.timeout)
-        const lookupASGsThatPreviouslyUsedThisAzFn = this.lookupASGsThatPreviouslyUsedThisAz(props.azTable.table, props.tracing, props.findAllASGsThatUseThisAzProps.memorySize, props.findAllASGsThatUseThisAzProps.timeout)
-        const removeAzFromAsgFn = this.removeAzFromAsg(props.tracing, props.findAllASGsThatUseThisAzProps.memorySize, props.findAllASGsThatUseThisAzProps.timeout)
-        const restoreAzToAsgFn = this.restoreAzToAsg(props.tracing, props.findAllASGsThatUseThisAzProps.memorySize, props.findAllASGsThatUseThisAzProps.timeout)
+        const findAllASGsThatUseThisAzFn = this.findAllASGsThatUseThisAz(props.tracing, 256, Duration.seconds(30))
+        const lookupASGsThatPreviouslyUsedThisAzFn = this.lookupASGsThatPreviouslyUsedThisAz(props.azTable.table, props.tracing, 256, Duration.seconds(30))
+        const removeAzFromAsgFn = this.removeAzFromAsg(props.tracing, 256, Duration.seconds(30))
+        const restoreAzToAsgFn = this.restoreAzToAsg(props.tracing, 256, Duration.seconds(30))
 
-        const addUpdateAutoScalingGroupEventFn = this.addUpdateAutoScalingGroupEvent(props.azTable.table, props.tracing, props.findAllASGsThatUseThisAzProps.memorySize, props.findAllASGsThatUseThisAzProps.timeout)
-        const deleteUpdateAutoScalingGroupEventFn = this.deleteUpdateAutoScalingGroupEvent(props.azTable.table, props.tracing, props.findAllASGsThatUseThisAzProps.memorySize, props.findAllASGsThatUseThisAzProps.timeout)
+        const addUpdateAutoScalingGroupEventFn = this.addUpdateAutoScalingGroupEvent(props.azTable.table, props.tracing, 256, Duration.seconds(30))
+        const deleteUpdateAutoScalingGroupEventFn = this.deleteUpdateAutoScalingGroupEvent(props.azTable.table, props.tracing, 256, Duration.seconds(30))
 
         /*
             Initial payload is
