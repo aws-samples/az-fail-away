@@ -16,7 +16,7 @@
  *  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  */
-import {Duration, Lazy, NestedStack, Stack, StackProps} from 'aws-cdk-lib';
+import {Duration, Lazy, NestedStack, Stack, StackProps, Tags} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import {AZTable} from "../constructs/database";
 import {Api} from "../constructs/api";
@@ -33,10 +33,10 @@ import {
     InitFile, InitService, InitServiceRestartHandle,
     InstanceClass,
     InstanceSize,
-    InstanceType,
+    InstanceType, IVpc,
     Peer,
     Port,
-    SecurityGroup,
+    SecurityGroup, SubnetSelection,
     SubnetType, UserData,
     Vpc
 } from "aws-cdk-lib/aws-ec2";
@@ -52,6 +52,13 @@ import {
 } from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import {dedent} from "ts-dedent"
 import {ManagedPolicy, Role, ServicePrincipal} from "aws-cdk-lib/aws-iam";
+import {CfnCell, CfnRecoveryGroup, CfnResourceSet} from "aws-cdk-lib/aws-route53recoveryreadiness";
+import {
+    GetResourcesCommand,
+    paginateGetResources,
+    ResourceGroupsTaggingAPIClient
+} from "@aws-sdk/client-resource-groups-tagging-api";
+import {AutoScalingClient, paginateDescribeAutoScalingGroups} from "@aws-sdk/client-auto-scaling";
 
 export interface StatelessStackProps extends AZFailAwayStateMachineProps {
 
@@ -60,12 +67,165 @@ export interface StatelessStackProps extends AZFailAwayStateMachineProps {
 export interface TestAsgStackProps extends StackProps {
     vpcId: string,
     count: number
+    cellular: boolean
+}
+
+const ROUTE_53_RECOVERY_READINESS_CFN_SUPPORTED_REGIONS = ["us-east-1", "us-west-2"]
+
+export interface Route53ArcStackProps extends StackProps {
+    recoveryGroupTagValue: string
+    regionalCellTagValue: string
+    region: string
+}
+
+export class Route53ArcStack extends Stack {
+    constructor(scope: Construct, id: string, props: Route53ArcStackProps) {
+        super(scope, id, props);
+        if (ROUTE_53_RECOVERY_READINESS_CFN_SUPPORTED_REGIONS.indexOf(this.region) == -1) {
+            throw new Error(`Route 53 Arc only supported in ${ROUTE_53_RECOVERY_READINESS_CFN_SUPPORTED_REGIONS}`)
+        }
+
+        const recoveryGroup = new CfnRecoveryGroup(this, "RecoveryGroup", {
+            recoveryGroupName: props.recoveryGroupTagValue,
+            cells: []
+        })
+
+        const regionalCell = new CfnCell(this, "RegionalCell", {
+            cellName: props.regionalCellTagValue,
+            cells: []
+        })
+        recoveryGroup.cells?.push(regionalCell.attrCellArn)
+
+        const regionalCellResources = (async (): Promise<string[]> => {
+            let results: string[] = []
+            const client = new ResourceGroupsTaggingAPIClient({region: props.region});
+            const regionalCellResourcePaginator = paginateGetResources({
+                client: client,
+                pageSize: 100,
+            }, {
+                TagFilters: [{
+                    Key: "Cell",
+                    Values: [props.regionalCellTagValue],
+
+                }, {
+                    Key: "CellType",
+                    Values: ["Regional"],
+
+                }, {
+                    Key: "RecoveryGroup",
+                    Values: [props.recoveryGroupTagValue],
+
+                }],
+                ResourceTypeFilters: ["elasticloadbalancing:loadbalancer"]
+            });
+            for await (const page of regionalCellResourcePaginator) {
+                if (page.ResourceTagMappingList != null) {
+                    results = results.concat(page.ResourceTagMappingList.flatMap(value => {
+
+                        return value.ResourceARN!
+                    }))
+
+                }
+            }
+            return results
+        })()
+        regionalCellResources.then(value => {
+            new CfnResourceSet(this, `${regionalCell.cellName}-resource-set`, {
+                resourceSetName: `${regionalCell.cellName}-resource-set`,
+                resourceSetType: "AWS::ElasticLoadBalancingV2::LoadBalancer",
+                resources: value.map(value1 => {
+                    return {
+                        readinessScopes: [regionalCell.attrCellArn],
+                        resourceArn: value1
+                    }
+                })
+            })
+        })
+        const zonalCellResources = (async (): Promise<Map<string,string[]>> => {
+            const accumulator:Map<string,string[]>=new Map<string, string[]>()
+            const client = new AutoScalingClient({region: props.region})
+            const zonalCellResourcePaginator = paginateDescribeAutoScalingGroups({
+                pageSize: 100,
+                client: client,
+            }, {
+                Filters: [{
+                    Name: "tag:CellType",
+                    Values: ["Zonal"],
+
+                }, {
+                    Name: "tag:RecoveryGroup",
+                    Values: [props.recoveryGroupTagValue],
+
+                }, {
+                    Name: "tag:RegionalCell",
+                    Values: [props.regionalCellTagValue],
+
+                }]
+            })
+
+            for await (const page of zonalCellResourcePaginator) {
+                if (page.AutoScalingGroups != null) {
+
+                    page.AutoScalingGroups.map(value => {
+                        const cellValue = value.Tags?.find(tag => tag.Key = "Cell")?.Value
+
+                        return new Map<string, string>([
+                            [ cellValue != null ? cellValue : "N/A",value.AutoScalingGroupARN!],
+
+                        ]) as Map<string, string>
+
+                    }).forEach(currentValue => {
+                        for (const key of currentValue.keys()){
+                            const value = currentValue.get(key)
+                            if(value!=null && value!="N/A") {
+                                if (accumulator.has(key)) {
+                                    if (Array.isArray(accumulator.get(key))) {
+                                        (accumulator.get(key) as string[]).push(value)
+                                    }
+                                }else{
+                                    accumulator.set(key,[value])
+                                }
+                            }
+
+                        }
+                    })
+
+
+
+                }
+            }
+            return accumulator
+        })()
+        zonalCellResources.then(value => {
+            for(const key of value.keys()) {
+                const resources=value.get(key)!
+                console.log(`ZonalCell ${key}: ${resources}`)
+                const zonalCell=new CfnCell(this,`${key}`,{
+                    cells:[],
+                    cellName:key
+
+                })
+                regionalCell.cells?.push(zonalCell.attrCellArn)
+                new CfnResourceSet(this, `${key}-resource-set`, {
+                    resourceSetName: `${zonalCell.cellName}-resource-set`,
+                    resourceSetType: "AWS::AutoScaling::AutoScalingGroup",
+                    resources: resources.map(value1 => {
+                        return {
+                            readinessScopes: [zonalCell.attrCellArn],
+                            resourceArn: value1
+                        }
+                    })
+                })
+            }
+        })
+    }
 }
 
 export class TestAsgStack extends Stack {
     get notificationArns(): string[] {
         return super.notificationArns;
     }
+
     constructor(scope: Construct, id: string, props: TestAsgStackProps) {
         super(scope, id, props);
         const vpc = Vpc.fromLookup(this, "test-asg-vpc", {
@@ -154,19 +314,18 @@ export class TestAsgStack extends Stack {
             }),
 
             InitFile.fromString("/root/server.js", script),
-            InitFile.fromString("/etc/systemd/system/node.service",nodeService),
-            InitService.enable("node",{
+            InitFile.fromString("/etc/systemd/system/node.service", nodeService),
+            InitService.enable("node", {
                 enabled: true,
                 ensureRunning: true
             })
-
         )
 
-        const instanceRole=new Role(this,"instance-role",{
+        const instanceRole = new Role(this, "instance-role", {
             assumedBy: new ServicePrincipal("ec2.amazonaws.com"),
             managedPolicies: [
-                ManagedPolicy.fromManagedPolicyArn(this,"AmazonSSMManagedInstanceCore","arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"),
-                ManagedPolicy.fromManagedPolicyArn(this,"CloudWatchAgentServerPolicy","arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy")
+                ManagedPolicy.fromManagedPolicyArn(this, "AmazonSSMManagedInstanceCore", "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"),
+                ManagedPolicy.fromManagedPolicyArn(this, "CloudWatchAgentServerPolicy", "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy")
             ]
         })
         Array(props.count).fill(0).map((_, i) => {
@@ -177,38 +336,9 @@ export class TestAsgStack extends Stack {
             })
             const publicSubnets = vpc.selectSubnets({
                 onePerAz: true,
-                subnetType: SubnetType.PUBLIC
-            })
-
-
-            const asg = new AutoScalingGroup(this, `asg-${i}`, {
-                vpc,
-                instanceType: InstanceType.of(InstanceClass.BURSTABLE3, InstanceSize.MICRO),
-                machineImage: new AmazonLinuxImage({
-                    generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
-                    cpuType: AmazonLinuxCpuType.X86_64,
-                    storage: AmazonLinuxStorage.EBS
-                }),
-                role: instanceRole,
-                userData: UserData.forLinux(),
-                init: cfnInit,
-                initOptions: {
-                    ignoreFailures: true,
-                    printLog: true
-                },
-                signals: Signals.waitForMinCapacity(),
-                securityGroup: webServerSecurityGroup,
-                vpcSubnets: privateSubnets,
-
-                maxCapacity: 10,
-                minCapacity: 3,
-                desiredCapacity: 3,
-                updatePolicy: UpdatePolicy.replacingUpdate()
+                subnetType: SubnetType.PUBLIC,
 
             })
-            const cfnLaunchConfig=asg.node.defaultChild as CfnAutoScalingGroup
-
-            asg.userData.addCommands(`/opt/aws/bin/cfn-signal -e $? --stack ${this.stackName} --resource ${this.getLogicalId(cfnLaunchConfig)} --region ${this.region} `.trim())
             const alb = new ApplicationLoadBalancer(this, `alb-${i}`, {
                 vpc: vpc,
                 securityGroup: albSecurityGroup,
@@ -240,7 +370,7 @@ export class TestAsgStack extends Stack {
                 slowStart: Duration.seconds(180)
 
             })
-            atg.addTarget(asg)
+
             const listener = alb.addListener("http-listener", {
                 port: 80,
                 protocol: ApplicationProtocol.HTTP,
@@ -252,8 +382,74 @@ export class TestAsgStack extends Stack {
                 targetGroups: [atg],
                 priority: 1
             })
+            const number = i.toString().padStart(3, "0")
+            const recoveryGroupName = `RecoveryGroup${number}`
+            const regionalCellName = `RegionalCell${number}`
+
+            Tags.of(alb).add("RecoveryGroup", recoveryGroupName)
+            Tags.of(alb).add("CellType", "Regional")
+            Tags.of(alb).add("Cell", regionalCellName)
+
+            if (props.cellular) {
+                privateSubnets.subnets.forEach((subnet, index) => {
+                    const letter = subnet.availabilityZone.charAt(subnet.availabilityZone.length - 1)
+                    const zonalCellName = `Cell${number}${letter}`
+
+                    const subnetSelection = vpc.selectSubnets({
+                        subnets: [subnet]
+                    })
+                    const asg = this.createAsg(i, letter, vpc, instanceRole, cfnInit, webServerSecurityGroup, subnetSelection)
+                    atg.addTarget(asg)
+                    Tags.of(asg).add("RecoveryGroup", recoveryGroupName)
+                    Tags.of(asg).add("RegionalCell", regionalCellName)
+                    Tags.of(asg).add("CellType", "Zonal")
+                    Tags.of(asg).add("Cell", zonalCellName)
+
+                })
+            } else {
+                const letter = ""
+                const zonalCellName = `Cell${number}${letter}`
+                const asg = this.createAsg(i, letter, vpc, instanceRole, cfnInit, webServerSecurityGroup, privateSubnets)
+                atg.addTarget(asg)
+                Tags.of(asg).add("RecoveryGroup", recoveryGroupName)
+                Tags.of(asg).add("RegionalCell", regionalCellName)
+                Tags.of(asg).add("CellType", "Zonal")
+                Tags.of(asg).add("Cell", zonalCellName)
+            }
+        })
+
+    }
+
+    private createAsg(i: number, letter: string, vpc: IVpc, instanceRole: Role, cfnInit: CloudFormationInit, webServerSecurityGroup: SecurityGroup, vpcSubnets: SubnetSelection): AutoScalingGroup {
+
+        const asg = new AutoScalingGroup(this, `asg-${i}${letter}`, {
+            vpc,
+            instanceType: InstanceType.of(InstanceClass.BURSTABLE3, InstanceSize.MICRO),
+            machineImage: new AmazonLinuxImage({
+                generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
+                cpuType: AmazonLinuxCpuType.X86_64,
+                storage: AmazonLinuxStorage.EBS
+            }),
+            role: instanceRole,
+            userData: UserData.forLinux(),
+            init: cfnInit,
+            initOptions: {
+                ignoreFailures: true,
+                printLog: true
+            },
+            signals: Signals.waitForMinCapacity(),
+            securityGroup: webServerSecurityGroup,
+            vpcSubnets: vpcSubnets,
+            maxCapacity: 10,
+            minCapacity: 3,
+            desiredCapacity: 3,
+            updatePolicy: UpdatePolicy.replacingUpdate()
 
         })
+
+        const cfnLaunchConfig = asg.node.defaultChild as CfnAutoScalingGroup
+        asg.userData.addCommands(`/opt/aws/bin/cfn-signal -e $? --stack ${this.stackName} --resource ${this.getLogicalId(cfnLaunchConfig)} --region ${this.region} `.trim())
+        return asg
 
     }
 }

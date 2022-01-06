@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import {AZFailAwayStack, TestAsgStack} from '../lib/infrastructure/stacks/stacks';
+import {AZFailAwayStack, Route53ArcStack, TestAsgStack} from '../lib/infrastructure/stacks/stacks';
 import {Tracing} from "aws-cdk-lib/aws-lambda";
 import {Duration} from "aws-cdk-lib";
 import {AwsSolutionsChecks, NagSuppressions} from "cdk-nag"
@@ -41,5 +41,14 @@ NagSuppressions.addStackSuppressions(failAwayStack,[{
 new TestAsgStack(app,"TestAsgStack",{
     env:env,
     count: 3,
-    vpcId: app.node.tryGetContext("vpcId")
+    vpcId: app.node.tryGetContext("vpcId"),
+    cellular:false
+})
+new Route53ArcStack(app,"RecoveryGroup000Stack",{
+    region:env.region,
+    recoveryGroupTagValue:"RecoveryGroup000",
+    regionalCellTagValue: "RegionalCell000",
+    env:{
+        region:"us-east-1"
+    }
 })
